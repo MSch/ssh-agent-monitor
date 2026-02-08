@@ -1,0 +1,2 @@
+#!/bin/sh
+touch -h "${XDG_RUNTIME_DIR}/ssh-auth-sock" 2>/dev/null

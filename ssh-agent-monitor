@@ -1,0 +1,142 @@
+#!/bin/bash
+
+SYMLINK="${XDG_RUNTIME_DIR}/ssh-auth-sock"
+CURRENT_SOCKET=""
+CURRENT_SCOPE=""
+
+find_ssh_directories() {
+	find /tmp -maxdepth 1 -type d -name "ssh-*" -user "$USER" 2>/dev/null
+}
+
+find_latest_socket() {
+	local newest_socket=""
+	local newest_time=0
+
+	while IFS= read -r dir; do
+		# Look for agent.* sockets in this directory
+		for sock in "$dir"/agent.*; do
+			[ -S "$sock" ] || continue
+
+			# Test if socket is alive
+			if SSH_AUTH_SOCK="$sock" timeout 1 ssh-add -l &>/dev/null; then
+				mod_time=$(stat -c %Y "$sock" 2>/dev/null)
+
+				if [ -n "$mod_time" ] && [ "$mod_time" -gt "$newest_time" ]; then
+					newest_time=$mod_time
+					newest_socket=$sock
+				fi
+			fi
+		done
+	done < <(find_ssh_directories)
+
+	echo "$newest_socket"
+}
+
+get_socket_pid() {
+	local socket="$1"
+	if [ -z "$socket" ]; then
+		return 1
+	fi
+
+	# Extract PID from socket path like /tmp/ssh-ABC123/agent.12345
+	basename "$socket" | sed 's/^agent\.//'
+}
+
+get_socket_scope() {
+	local socket="$1"
+	if [ -z "$socket" ]; then
+		return 1
+	fi
+
+	local pid=$(get_socket_pid "$socket")
+	if [ -z "$pid" ]; then
+		return 1
+	fi
+
+	local uid=$(id -u)
+
+	# Look for systemd user session scope in cgroup
+	# Check all cgroup controllers, not just the unified hierarchy
+	local scope=""
+	while IFS=: read -r hierarchy controllers cgroup_path; do
+		# Look for user session scope pattern
+		if [[ "$cgroup_path" =~ /user\.slice/user-${uid}\.slice/(session-[0-9]+\.scope) ]]; then
+			scope="${BASH_REMATCH[1]}"
+			break
+		fi
+	done <"/proc/$pid/cgroup" 2>/dev/null
+
+	if [ -n "$scope" ]; then
+		echo "$scope"
+	else
+		return 1
+	fi
+}
+
+update_symlink() {
+	local new_sock=$(find_latest_socket)
+
+	if [ -z "$new_sock" ]; then
+		echo "No active SSH auth sockets found"
+		CURRENT_SOCKET=""
+		CURRENT_SCOPE=""
+		return 1
+	fi
+
+	local current_target=$(readlink "$SYMLINK" 2>/dev/null)
+
+	if [ "$new_sock" != "$current_target" ]; then
+		# Atomic symlink update
+		ln -sfn "$new_sock" "$SYMLINK.tmp" && mv -f "$SYMLINK.tmp" "$SYMLINK"
+
+		# Update tracking variables
+		CURRENT_SOCKET="$new_sock"
+		CURRENT_SCOPE=$(get_socket_scope "$new_sock")
+		echo "Socket changed: $CURRENT_SOCKET ($CURRENT_SCOPE)"
+	else
+		# Ensure tracking variables are set even if symlink unchanged, which can happen during the initial update
+		if [ -z "$CURRENT_SOCKET" ]; then
+			CURRENT_SOCKET="$new_sock"
+			CURRENT_SCOPE=$(get_socket_scope "$new_sock")
+		fi
+		echo "Socket unchanged: $CURRENT_SOCKET ($CURRENT_SCOPE)"
+	fi
+
+	return 0
+}
+
+wait_for_connection() {
+	echo "Waiting for connection on $SYMLINK..."
+
+	# Use inotify to watch for events on the socket
+	# ~/.ssh/rc touches the symlink and triggers inotifywait
+	inotifywait -q -e attrib,move_self,delete_self -P "$SYMLINK" 2>/dev/null
+
+	echo "Connected"
+}
+
+# Initial update
+update_symlink
+
+while true; do
+	if [ -z "$CURRENT_SOCKET" ]; then
+		echo "No current socket, scanning..."
+		wait_for_connection
+		update_symlink
+		continue
+	fi
+
+	# Check if current socket still exists
+	if ! SSH_AUTH_SOCK="$CURRENT_SOCKET" timeout 1 ssh-add -l &>/dev/null; then
+		echo "Socket $CURRENT_SOCKET ($CURRENT_SCOPE) failed, finding new socket"
+		update_symlink
+		continue
+	fi
+
+	# Watch the specific socket and proc entry
+	watch_targets="$CURRENT_SOCKET /run/systemd/transient/$CURRENT_SCOPE $SYMLINK"
+
+	# Run inotify on specific targets
+	echo "Monitoring $CURRENT_SOCKET ($CURRENT_SCOPE)"
+	inotifywait -q -e delete_self,move_self,attrib -P $watch_targets 2>/dev/null
+done

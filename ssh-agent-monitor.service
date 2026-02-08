@@ -1,0 +1,13 @@
+[Unit]
+Description=SSH Auth Socket manager
+After=basic.target
+RequiresMountsFor=/run/user/%U/ssh-agent-sock
+
+[Service]
+Type=simple
+ExecStart=/.shared/ssh-agent-monitor/ssh-agent-monitor
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

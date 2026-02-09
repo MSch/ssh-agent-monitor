@@ -1,5 +1,18 @@
 #!/bin/bash
 
+set -euo pipefail
+
+# Dependency check
+if ! command -v inotifywait >/dev/null 2>&1; then
+	echo "Error: inotifywait not found. Install inotify-tools." >&2
+	exit 1
+fi
+
+if ! command -v ssh-add >/dev/null 2>&1; then
+	echo "Error: ssh-add not found. Install openssh-client." >&2
+	exit 1
+fi
+
 SYMLINK="${XDG_RUNTIME_DIR}/ssh-auth-sock"
 CURRENT_SOCKET=""
 CURRENT_SCOPE=""
@@ -80,7 +93,7 @@ update_symlink() {
 		echo "No active SSH auth sockets found"
 		CURRENT_SOCKET=""
 		CURRENT_SCOPE=""
-		return 1
+		return 0
 	fi
 
 	local current_target=$(readlink "$SYMLINK" 2>/dev/null)
@@ -91,13 +104,13 @@ update_symlink() {
 
 		# Update tracking variables
 		CURRENT_SOCKET="$new_sock"
-		CURRENT_SCOPE=$(get_socket_scope "$new_sock")
+		CURRENT_SCOPE=$(get_socket_scope "$new_sock") || true
 		echo "Socket changed: $CURRENT_SOCKET ($CURRENT_SCOPE)"
 	else
 		# Ensure tracking variables are set even if symlink unchanged, which can happen during the initial update
 		if [ -z "$CURRENT_SOCKET" ]; then
 			CURRENT_SOCKET="$new_sock"
-			CURRENT_SCOPE=$(get_socket_scope "$new_sock")
+			CURRENT_SCOPE=$(get_socket_scope "$new_sock") || true
 		fi
 		echo "Socket unchanged: $CURRENT_SOCKET ($CURRENT_SCOPE)"
 	fi
@@ -108,9 +121,17 @@ update_symlink() {
 wait_for_connection() {
 	echo "Waiting for connection on $SYMLINK..."
 
-	# Use inotify to watch for events on the socket
-	# ~/.ssh/rc touches the symlink and triggers inotifywait
-	inotifywait -q -e attrib,move_self,delete_self -P "$SYMLINK" 2>/dev/null
+	# If symlink doesn't exist yet, watch the parent directory for it to appear
+	if [ ! -e "$SYMLINK" ]; then
+		local runtime_dir="${XDG_RUNTIME_DIR}"
+		while [ ! -e "$SYMLINK" ]; do
+			inotifywait -q -e create "$runtime_dir" >/dev/null 2>&1 || true
+		done
+	else
+		# Use inotify to watch for events on the socket
+		# ~/.ssh/rc touches the symlink and triggers inotifywait
+		inotifywait -q -e attrib,move_self,delete_self -P "$SYMLINK" >/dev/null 2>&1 || true
+	fi
 
 	echo "Connected"
 }
@@ -138,5 +159,5 @@ while true; do
 
 	# Run inotify on specific targets
 	echo "Monitoring $CURRENT_SOCKET ($CURRENT_SCOPE)"
-	inotifywait -q -e delete_self,move_self,attrib -P $watch_targets 2>/dev/null
+	inotifywait -q -e delete_self,move_self,attrib -P $watch_targets >/dev/null 2>&1 || true
 done

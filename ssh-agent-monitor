@@ -122,9 +122,9 @@ wait_for_connection() {
 	echo "Waiting for connection on $SYMLINK..."
 
 	# If symlink doesn't exist yet, watch the parent directory for it to appear
-	if [ ! -e "$SYMLINK" ]; then
+	if [ ! -L "$SYMLINK" ]; then
 		local runtime_dir="${XDG_RUNTIME_DIR}"
-		while [ ! -e "$SYMLINK" ]; do
+		while [ ! -L "$SYMLINK" ]; do
 			inotifywait -q -e create "$runtime_dir" >/dev/null 2>&1 || true
 		done
 	else

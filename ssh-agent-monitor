@@ -124,9 +124,34 @@ wait_for_connection() {
 	# If symlink doesn't exist yet, watch the parent directory for it to appear
 	if [ ! -L "$SYMLINK" ]; then
 		local runtime_dir="${XDG_RUNTIME_DIR}"
+		local watcher_failed=0
+		local watcher_in
+		local watcher_out
+
+		# update_symlink() publishes ssh-auth-sock by renaming ssh-auth-sock.tmp into place.
+		# A loop that re-runs one-shot inotifywait can wake on CREATE ssh-auth-sock.tmp, go
+		# back to sleep, and then miss MOVED_TO ssh-auth-sock entirely. Start one long-lived
+		# watcher first, then let each event wake the loop so the -L check can run again
+		# without any gap where the rename can be lost.
+		coproc SYMLINK_WATCHER { inotifywait -q -m -e create,moved_to "$runtime_dir" 2>/dev/null; }
+		watcher_in=${SYMLINK_WATCHER[0]}
+		watcher_out=${SYMLINK_WATCHER[1]}
+
 		while [ ! -L "$SYMLINK" ]; do
-			inotifywait -q -e create "$runtime_dir" >/dev/null 2>&1 || true
+			if ! IFS= read -r -u "$watcher_in"; then
+				watcher_failed=1
+				break
+			fi
 		done
+
+		exec {watcher_in}<&-
+		exec {watcher_out}>&-
+		kill "$SYMLINK_WATCHER_PID" 2>/dev/null || true
+		wait "$SYMLINK_WATCHER_PID" 2>/dev/null || true
+
+		if [ "$watcher_failed" -ne 0 ]; then
+			return 1
+		fi
 	else
 		# Use inotify to watch for events on the socket
 		# ~/.ssh/rc touches the symlink and triggers inotifywait

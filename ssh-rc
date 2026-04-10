@@ -1,2 +1,7 @@
 #!/bin/sh
-touch -h "${XDG_RUNTIME_DIR}/ssh-auth-sock" 2>/dev/null
+# Notify ssh-agent-monitor of a new connection.
+# touch -h updates the symlink's timestamp (attrib event) when it exists,
+# but does nothing if the symlink hasn't been created yet. Fall back to a
+# regular touch to create the file (create event) so the monitor wakes up
+# on the very first connection.
+touch -h "${XDG_RUNTIME_DIR}/ssh-auth-sock" 2>/dev/null || touch "${XDG_RUNTIME_DIR}/ssh-auth-sock" 2>/dev/null

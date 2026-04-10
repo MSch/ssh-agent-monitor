@@ -122,7 +122,7 @@ wait_for_connection() {
 	echo "Waiting for connection on $SYMLINK..."
 
 	# If symlink doesn't exist yet, watch the parent directory for it to appear
-	if [ ! -L "$SYMLINK" ]; then
+	if [ ! -e "$SYMLINK" ]; then
 		local runtime_dir="${XDG_RUNTIME_DIR}"
 		local watcher_failed=0
 		local watcher_in
@@ -137,7 +137,7 @@ wait_for_connection() {
 		watcher_in=${SYMLINK_WATCHER[0]}
 		watcher_out=${SYMLINK_WATCHER[1]}
 
-		while [ ! -L "$SYMLINK" ]; do
+		while [ ! -e "$SYMLINK" ]; do
 			if ! IFS= read -r -u "$watcher_in"; then
 				watcher_failed=1
 				break

@@ -1,7 +1,16 @@
 #!/bin/sh
-# Notify ssh-agent-monitor of a new connection.
-# touch -h updates the symlink's timestamp (attrib event) when it exists,
-# but does nothing if the symlink hasn't been created yet. Fall back to a
-# regular touch to create the file (create event) so the monitor wakes up
-# on the very first connection.
-touch -h "${XDG_RUNTIME_DIR}/ssh-auth-sock" 2>/dev/null || touch "${XDG_RUNTIME_DIR}/ssh-auth-sock" 2>/dev/null
+# Called by sshd before the user's shell starts.
+# $SSH_AUTH_SOCK points to the forwarded agent socket.
+#
+# Create/update the symlink synchronously so it is ready by the time the
+# shell starts (no race with the monitor). The atomic rename ensures
+# readers never see a half-written symlink. The monitor picks up the
+# change via inotify (moved_to / attrib) for its own bookkeeping.
+if [ -n "$SSH_AUTH_SOCK" ]; then
+    ln -sfn "$SSH_AUTH_SOCK" "${XDG_RUNTIME_DIR}/ssh-auth-sock.tmp" && \
+        mv -f "${XDG_RUNTIME_DIR}/ssh-auth-sock.tmp" "${XDG_RUNTIME_DIR}/ssh-auth-sock"
+else
+    # No agent forwarding — just wake the monitor in case it needs to scan.
+    touch -h "${XDG_RUNTIME_DIR}/ssh-auth-sock" 2>/dev/null || \
+        touch "${XDG_RUNTIME_DIR}/ssh-auth-sock" 2>/dev/null
+fi
